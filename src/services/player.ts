@@ -1,9 +1,11 @@
 import { useSyncExternalStore } from 'react';
 import { db, uid, ownedSong } from './db';
 import type { Song, QueueState } from '../types';
+import { requiresNativeAudio } from './audio-platform';
 interface State {
   song?: Song;
   playing: boolean;
+  loading: boolean;
   time: number;
   duration: number;
   volume: number;
@@ -20,14 +22,19 @@ interface PreparedTrack {
   song: Song;
   url: string;
 }
-class Player {
+export class Player {
   audio = new Audio();
+  readonly supportsEqualizer = !requiresNativeAudio();
   ownerId = '';
   private objectUrl = '';
   private token = 0;
   private preparation = 0;
   private nextId?: string;
   private prepared?: PreparedTrack;
+  private playbackIntent = false;
+  private playAttempt = 0;
+  private playPending = false;
+  private canPlayRetry = false;
   private recorded = false;
   private listening = 0;
   private lastWall = 0;
@@ -40,6 +47,7 @@ class Player {
   private timer?: ReturnType<typeof setTimeout>;
   state: State = {
     playing: false,
+    loading: false,
     time: 0,
     duration: 0,
     volume: 0.8,
@@ -59,13 +67,7 @@ class Player {
     this.audio.setAttribute('aria-hidden', 'true');
     document.body.append(this.audio);
     // Safari can use this hint to retain a music playback session while locked.
-    const audioSession = (navigator as Navigator & { audioSession?: { type: string } })
-      .audioSession;
-    try {
-      if (audioSession) audioSession.type = 'playback';
-    } catch {
-      /* Optional API; native HTML audio remains the fallback. */
-    }
+    this.claimAudioSession();
     document.addEventListener('visibilitychange', () => {
       // Keep the native media element playing when the PWA leaves the foreground.
       this.syncMediaSession();
@@ -78,16 +80,43 @@ class Player {
       this.lastWall = performance.now();
       this.patch({ playing: true });
     });
+    this.audio.addEventListener('playing', () => {
+      this.patch({ playing: true, loading: false, error: '' });
+    });
+    this.audio.addEventListener('canplay', () => {
+      // WebKit may abort play() while selecting a replacement resource. Retry
+      // from the media readiness event, never a background timer or UI effect.
+      if (this.playbackIntent && this.audio.paused && !this.playPending && this.canPlayRetry) {
+        this.canPlayRetry = false;
+        void this.resume(false);
+      }
+    });
     this.audio.addEventListener('pause', () => {
       // An ended element can emit pause before ended. Keep the system session
       // alive until the next track starts or the queue actually finishes.
-      if (this.audio.ended) return;
+      if (this.audio.ended || (this.state.loading && this.playbackIntent)) return;
+      this.playbackIntent = false;
+      this.canPlayRetry = false;
       this.lastWall = 0;
-      this.patch({ playing: false });
+      this.patch({ playing: false, loading: false });
       void this.persist();
     });
     this.audio.addEventListener('timeupdate', () => {
       if (this.checkSleep()) return;
+      // iOS may release the audio session before delivering ended. A native
+      // loop keeps that session eligible; advance at its wrap without cutting
+      // the tail of the song or depending on a background timer.
+      if (
+        this.audio.loop &&
+        this.playbackIntent &&
+        !this.state.loading &&
+        !this.audio.paused &&
+        this.state.repeat !== 'one' &&
+        this.state.time - this.audio.currentTime > Math.max(1, this.state.duration / 2)
+      ) {
+        void this.next(true);
+        return;
+      }
       const now = performance.now();
       if (!this.audio.paused && this.lastWall)
         this.listening += Math.min((now - this.lastWall) / 1000, 2);
@@ -125,6 +154,7 @@ class Player {
         this.patch({
           error: 'No se puede decodificar este audio. Prueba a convertirlo a MP3.',
           playing: false,
+          loading: false,
         });
     });
     if ('mediaSession' in navigator) {
@@ -147,6 +177,14 @@ class Player {
         } catch {
           /* Unsupported system action */
         }
+    }
+  }
+  private claimAudioSession() {
+    try {
+      const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
+      if (session && session.type !== 'playback') session.type = 'playback';
+    } catch {
+      /* Optional API; native HTML audio remains the fallback. */
     }
   }
   subscribe = (fn: () => void) => {
@@ -213,7 +251,7 @@ class Player {
           await this.load(q.currentId, false);
           this.seek(q.position);
         } catch {
-          /* Stale queue item */
+          this.patch({ loading: false });
         }
       }
     }
@@ -221,6 +259,8 @@ class Player {
   async load(id: string, autoplay = true) {
     const token = ++this.token;
     const owner = this.ownerId;
+    this.playbackIntent = autoplay;
+    this.patch({ loading: true });
     let track: PreparedTrack;
     if (this.prepared?.song.id === id && this.prepared.song.ownerId === owner) {
       track = this.prepared;
@@ -234,16 +274,22 @@ class Player {
     }
     this.clearPrepared();
     if (this.recorded) void db.history.update(this.historyId, { seconds: this.listening });
-    if (this.objectUrl) URL.revokeObjectURL(this.objectUrl);
+    const previousUrl = this.objectUrl;
     this.objectUrl = track.url;
     this.recorded = false;
     this.listening = 0;
     this.historyId = uid();
+    // Keep the same native element. Safari needs an explicit resource reset,
+    // with pause/load/play all in the original media-control event task.
+    this.audio.pause();
     this.audio.src = this.objectUrl;
+    this.audio.load();
+    if (previousUrl) URL.revokeObjectURL(previousUrl);
     // Browsers may reset the rate when replacing the media resource.
     this.audio.playbackRate = this.state.speed;
     const { song } = track;
-    this.patch({ song, time: 0, duration: song.duration, error: '' });
+    this.patch({ song, time: 0, duration: song.duration, error: '', loading: autoplay });
+    const playback = autoplay ? this.resume() : undefined;
     if ('mediaSession' in navigator && typeof MediaMetadata !== 'undefined')
       navigator.mediaSession.metadata = new MediaMetadata({
         title: song.title,
@@ -253,7 +299,6 @@ class Player {
       });
     // With a prepared track play() is called inside ended/nexttrack, before
     // awaiting IndexedDB or another task that may be suspended in background.
-    const playback = autoplay ? this.resume() : undefined;
     this.prepareNext();
     await playback;
     await this.persist();
@@ -266,31 +311,61 @@ class Player {
     } catch (e) {
       this.patch({
         error: e instanceof Error ? e.message : 'No se pudo reproducir.',
+        loading: false,
       });
     }
   }
-  async resume() {
+  async resume(allowRetry = true) {
     if (!this.state.song) return;
     const token = this.token;
+    const attempt = ++this.playAttempt;
+    this.playbackIntent = true;
+    this.playPending = true;
+    this.canPlayRetry = allowRetry;
+    this.claimAudioSession();
+    this.patch({ loading: this.audio.paused, error: '' });
     try {
       const equalizer =
-        this.state.eq.some((x) => x !== 0) && !this.context
+        this.supportsEqualizer && this.state.eq.some((x) => x !== 0) && !this.context
           ? this.enableEqualizer()
-          : this.context?.state === 'suspended'
+          : this.context && this.context.state !== 'running' && this.context.state !== 'closed'
             ? this.context.resume()
             : undefined;
       await Promise.all([this.audio.play(), equalizer]);
     } catch (e) {
-      if (token !== this.token || (e instanceof Error && e.name === 'AbortError')) return;
+      if (token !== this.token || attempt !== this.playAttempt) return;
+      if (
+        e instanceof Error &&
+        e.name === 'AbortError' &&
+        this.playbackIntent &&
+        this.canPlayRetry
+      ) {
+        if (this.audio.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+          this.playPending = false;
+          this.canPlayRetry = false;
+          void this.resume(false);
+        }
+        return;
+      }
+      this.playbackIntent = false;
       this.patch({
         playing: false,
+        loading: false,
         error: e instanceof Error ? e.message : 'Pulsa reproducir para continuar.',
       });
+    } finally {
+      if (attempt === this.playAttempt) this.playPending = false;
     }
   }
   pause() {
+    this.playbackIntent = false;
+    ++this.playAttempt;
+    this.playPending = false;
+    this.canPlayRetry = false;
+    // Cancel an asynchronous track lookup so it cannot undo this pause.
+    ++this.token;
     this.audio.pause();
-    this.patch({ playing: false });
+    this.patch({ playing: false, loading: false });
     if (this.recorded) void db.history.update(this.historyId, { seconds: this.listening });
   }
   toggle() {
@@ -325,7 +400,7 @@ class Player {
     try {
       await this.load(id);
     } catch (e) {
-      this.patch({ error: String(e), playing: !this.audio.paused });
+      this.patch({ error: String(e), playing: !this.audio.paused, loading: false });
     }
   }
   private chooseNext() {
@@ -343,6 +418,10 @@ class Player {
     if (this.prepared) URL.revokeObjectURL(this.prepared.url);
     this.prepared = undefined;
     this.nextId = undefined;
+    this.updateNativeLoop();
+  }
+  private updateNativeLoop() {
+    this.audio.loop = !this.supportsEqualizer && (this.state.repeat === 'one' || !!this.prepared);
   }
   private prepareNext() {
     this.clearPrepared();
@@ -355,8 +434,10 @@ class Player {
     void Promise.all([ownedSong(owner, id), db.audioBlobs.get(id)])
       .then(([song, record]) => {
         if (preparation !== this.preparation || owner !== this.ownerId) return;
-        if (record?.ownerId === owner)
+        if (record?.ownerId === owner) {
           this.prepared = { song, url: URL.createObjectURL(record.blob) };
+          this.updateNativeLoop();
+        }
       })
       .catch(() => {
         // Report unavailable audio only when playback is requested.
@@ -378,7 +459,10 @@ class Player {
       try {
         await this.load(this.state.ids[index - 1]);
       } catch (e) {
-        this.patch({ error: e instanceof Error ? e.message : 'Audio no disponible.' });
+        this.patch({
+          error: e instanceof Error ? e.message : 'Audio no disponible.',
+          loading: false,
+        });
       }
     } else this.seek(0);
   }
@@ -436,6 +520,9 @@ class Player {
     void this.savePreference({ eq: values });
   }
   async enableEqualizer() {
+    // Attaching a MediaElementSource is permanent for that element. Keep iOS
+    // on its native output even when a saved profile has a non-flat preset.
+    if (!this.supportsEqualizer) return;
     if (!this.context) {
       this.context = new AudioContext();
       const input = this.context.createMediaElementSource(this.audio);

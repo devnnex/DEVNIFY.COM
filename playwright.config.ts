@@ -16,5 +16,8 @@ export default defineConfig({
       reuseExistingServer: !process.env.CI,
     },
   ],
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    { name: 'webkit', testMatch: 'headset-background.spec.ts', use: { ...devices['iPhone 13'] } },
+  ],
 });

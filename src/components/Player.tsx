@@ -338,6 +338,7 @@ export function Player({ songs, notify }: { songs: Song[]; notify: (s: string) =
             <span>Ecualizador</span>
             <select
               aria-label="Ecualizador"
+              disabled={!player.supportsEqualizer}
               onChange={async (e) => {
                 try {
                   await player.enableEqualizer();
@@ -360,11 +361,18 @@ export function Player({ songs, notify }: { songs: Song[]; notify: (s: string) =
               ))}
             </select>
           </label>
+          {!player.supportsEqualizer && (
+            <p className="notice">
+              En iPhone y iPad se usa audio nativo para reproducir con la pantalla bloqueada. El
+              ecualizador no está disponible en estos dispositivos.
+            </p>
+          )}
           <div className="eq-bands">
             {['60 Hz', '230 Hz', '910 Hz', '3.6 kHz', '14 kHz'].map((label, i) => (
               <label key={label}>
                 <input
                   aria-label={label}
+                  disabled={!player.supportsEqualizer}
                   type="range"
                   min="-12"
                   max="12"

@@ -4,6 +4,7 @@ import { player } from '../services/player';
 const canAutoUpdate = () =>
   document.visibilityState === 'visible' &&
   !player.state.playing &&
+  !player.state.loading &&
   !document.querySelector('dialog[open], form, [aria-busy="true"]') &&
   !document.activeElement?.closest('input, textarea, select, [contenteditable="true"]');
 
@@ -87,7 +88,12 @@ export function useRegisterSW() {
       observed?.addEventListener('statechange', stateChanged);
     };
     const controllerChanged = () => {
-      if (applyUpdate.current && !player.state.playing && document.visibilityState === 'visible') {
+      if (
+        applyUpdate.current &&
+        !player.state.playing &&
+        !player.state.loading &&
+        document.visibilityState === 'visible'
+      ) {
         applyUpdate.current = false;
         location.reload();
       } else if (hadController) {
@@ -99,10 +105,11 @@ export function useRegisterSW() {
       }
       hadController = true;
     };
-    let wasPlaying = player.state.playing;
+    let wasBusy = player.state.playing || player.state.loading;
     const unsubscribe = player.subscribe(() => {
-      if (wasPlaying === player.state.playing) return;
-      wasPlaying = player.state.playing;
+      const busy = player.state.playing || player.state.loading;
+      if (wasBusy === busy) return;
+      wasBusy = busy;
       scheduleUpdate();
     });
     navigator.serviceWorker.addEventListener('controllerchange', controllerChanged);

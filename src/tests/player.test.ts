@@ -2,6 +2,34 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import Dexie from 'dexie';
 import { db } from '../services/db';
 import type { Song } from '../types';
+import { requiresNativeAudio } from '../services/audio-platform';
+
+class TestContext {
+  static latest: TestContext;
+  state = 'running';
+  destination = {};
+  constructor() {
+    TestContext.latest = this;
+  }
+  resume = vi.fn(async () => {
+    this.state = 'running';
+  });
+  createMediaElementSource() {
+    return { connect: vi.fn() };
+  }
+  createBiquadFilter() {
+    return {
+      connect: vi.fn(),
+      gain: { value: 0 },
+      frequency: { value: 0 },
+      Q: { value: 0 },
+      type: '',
+    };
+  }
+  createGain() {
+    return { connect: vi.fn(), gain: { value: 1 } };
+  }
+}
 
 class TestAudio extends EventTarget {
   src = '';
@@ -9,6 +37,8 @@ class TestAudio extends EventTarget {
   duration = 20;
   paused = true;
   ended = false;
+  loop = false;
+  readyState = 4;
   playbackRate = 1;
   volume = 1;
   muted = false;
@@ -19,11 +49,15 @@ class TestAudio extends EventTarget {
   removeAttribute() {
     this.src = '';
   }
-  load() {}
+  load = vi.fn(() => {
+    this.currentTime = 0;
+    this.ended = false;
+  });
   play = vi.fn(async () => {
     this.ended = false;
     this.paused = false;
     this.dispatchEvent(new Event('play'));
+    this.dispatchEvent(new Event('playing'));
   });
   pause = vi.fn(() => {
     this.paused = true;
@@ -66,9 +100,13 @@ let created: ReturnType<typeof vi.spyOn>;
 
 beforeAll(async () => {
   vi.stubGlobal('Audio', TestAudio);
+  vi.stubGlobal('AudioContext', TestContext);
+  vi.stubGlobal('HTMLMediaElement', { HAVE_FUTURE_DATA: 3 });
   vi.stubGlobal('document', doc);
   vi.stubGlobal('window', new EventTarget());
   vi.stubGlobal('navigator', {
+    userAgent: 'Desktop test browser',
+    maxTouchPoints: 0,
     audioSession: { type: 'auto' },
     mediaSession: {
       playbackState: 'none',
@@ -137,7 +175,9 @@ describe('background playback and headset controls', () => {
     expect(player.state.song?.id).toBe('b');
     expect(audio.src).not.toBe(before);
     expect(audio.play).toHaveBeenCalledTimes(2);
-    expect(audio.pause).toHaveBeenCalledTimes(pauses);
+    expect(audio.pause).toHaveBeenCalledTimes(pauses + 1);
+    expect(audio.load).toHaveBeenCalled();
+    expect(player.state.loading).toBe(false);
     expect(navigator.mediaSession.playbackState).toBe('playing');
     read.mockRestore();
   });
@@ -213,5 +253,111 @@ describe('background playback and headset controls', () => {
     expect(revoked).toHaveBeenCalledTimes(2);
     expect(audio.src).toBe('');
     expect(player.state.song).toBeUndefined();
+  });
+
+  it('recovers an interrupted equalizer during a headset play command', async () => {
+    await start();
+    player.equalizer([8, 5, 0, 0, 0]);
+    await player.enableEqualizer();
+    const context = TestContext.latest;
+    handlers.get('pause')?.({ action: 'pause' });
+    context.state = 'interrupted';
+    context.resume.mockClear();
+    handlers.get('play')?.({ action: 'play' });
+    expect(context.resume).toHaveBeenCalledOnce();
+    expect(context.state).toBe('running');
+    expect(audio.paused).toBe(false);
+    expect(player.state.loading).toBe(false);
+  });
+
+  it('does not overwrite a pause with a delayed failed play attempt', async () => {
+    await start();
+    player.pause();
+    let rejectPlay!: (reason: Error) => void;
+    audio.play.mockImplementationOnce(
+      () =>
+        new Promise<void>((_, reject) => {
+          rejectPlay = reject;
+        }),
+    );
+    const pending = player.resume();
+    player.pause();
+    rejectPlay(new Error('Old play failure'));
+    await pending;
+    expect(player.state.playing).toBe(false);
+    expect(player.state.error).toBe('');
+    audio.dispatchEvent(new Event('canplay'));
+    expect(audio.paused).toBe(true);
+  });
+
+  it('retries an aborted resource change once from canplay without opening the app', async () => {
+    await start();
+    player.pause();
+    audio.readyState = 0;
+    audio.play.mockRejectedValueOnce(new DOMException('Resource changed', 'AbortError'));
+    await player.resume();
+    const calls = audio.play.mock.calls.length;
+    audio.readyState = 4;
+    audio.dispatchEvent(new Event('canplay'));
+    expect(audio.play).toHaveBeenCalledTimes(calls + 1);
+    expect(audio.paused).toBe(false);
+    expect(player.state.loading).toBe(false);
+  });
+});
+
+describe('iOS native playback', () => {
+  it('detects iPhone and desktop-mode iPad without changing Android or Mac playback', () => {
+    expect(requiresNativeAudio({ userAgent: 'iPhone AppleWebKit Safari', maxTouchPoints: 5 })).toBe(
+      true,
+    );
+    expect(
+      requiresNativeAudio({ userAgent: 'Macintosh AppleWebKit Safari', maxTouchPoints: 5 }),
+    ).toBe(true);
+    expect(
+      requiresNativeAudio({ userAgent: 'Macintosh AppleWebKit Safari', maxTouchPoints: 0 }),
+    ).toBe(false);
+    expect(requiresNativeAudio({ userAgent: 'Android Chrome', maxTouchPoints: 5 })).toBe(false);
+  });
+
+  it('keeps saved equalizer settings off the iPhone output and advances at the native loop boundary', async () => {
+    const originalNavigator = navigator;
+    const originalHandlers = new Map(handlers);
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      userAgent: 'iPhone AppleWebKit Safari',
+      maxTouchPoints: 5,
+    });
+    const { Player } = await import('../services/player');
+    const native = new Player();
+    const nativeAudio = native.audio as unknown as TestAudio;
+    const constructContext = vi.fn(() => {
+      throw new Error('Web Audio must not be attached on iPhone');
+    });
+    vi.stubGlobal('AudioContext', constructContext);
+    try {
+      await native.setOwner('owner');
+      native.equalizer([8, 5, 0, 0, 0]);
+      await native.enableEqualizer();
+      await native.play(tracks[0], ['a', 'b']);
+      await vi.waitFor(() => expect(nativeAudio.loop).toBe(true));
+      handlers.get('pause')?.({ action: 'pause' });
+      handlers.get('play')?.({ action: 'play' });
+      expect(nativeAudio.paused).toBe(false);
+      expect(constructContext).not.toHaveBeenCalled();
+      native.seek(19.8);
+      nativeAudio.currentTime = 0.1;
+      nativeAudio.dispatchEvent(new Event('timeupdate'));
+      expect(native.state.song?.id).toBe('b');
+      expect(nativeAudio.paused).toBe(false);
+      expect(nativeAudio.loop).toBe(false);
+      nativeAudio.finish();
+      expect(native.state.playing).toBe(false);
+    } finally {
+      await native.setOwner('');
+      handlers.clear();
+      for (const [action, handler] of originalHandlers) handlers.set(action, handler);
+      vi.stubGlobal('navigator', originalNavigator);
+      vi.stubGlobal('AudioContext', TestContext);
+    }
   });
 });
