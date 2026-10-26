@@ -1,0 +1,10 @@
+{
+  "VIDEO_ID_01": {
+    "audioUrl": "https://audio.tudominio.com/mi-cancion.mp3",
+    "authorizationReference": "Referencia interna de propiedad/licencia y permiso de descarga revisados por el administrador"
+  },
+  "VIDEO_ID_02": {
+    "extractFromYoutube": true,
+    "authorizationReference": "Referencia de los permisos del proveedor y titulares verificados por el administrador para este vídeo"
+  }
+}

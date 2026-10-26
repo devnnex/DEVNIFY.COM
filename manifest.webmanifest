@@ -1,0 +1,29 @@
+{
+  "name": "Devnify",
+  "short_name": "Devnify",
+  "description": "Tu música, tu espacio. Reproductor personal offline.",
+  "theme_color": "#0d0c12",
+  "background_color": "#0d0c12",
+  "display": "standalone",
+  "start_url": "./index.html",
+  "scope": "./",
+  "lang": "es",
+  "icons": [
+    {
+      "src": "public/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "public/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "public/icons/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
