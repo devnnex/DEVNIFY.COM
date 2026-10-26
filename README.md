@@ -8,6 +8,8 @@ Reproductor musical personal, instalable y offline para GitHub Pages. React, Typ
 
 [Convertir vídeo a MP3 sin servidor](docs/CONVERSION-LOCAL.md): archivos del dispositivo y URLs directas compatibles, con guardado en Favoritos/playlists.
 
+[Reproducción con pantalla bloqueada y actualizaciones del PWA](docs/REPRODUCCION-SEGUNDO-PLANO.md): preparación de la siguiente pista, controles de audífonos y comprobación en el teléfono.
+
 [Activar el motor de descarga de YouTube](docs/DESCARGA-YOUTUBE.md): yt-dlp + FFmpeg, catálogo de fuentes autorizadas y conexión con Devnify. Requiere servidor separado; no está desplegado automáticamente.
 
 ## Ejecutar en este equipo
@@ -46,12 +48,12 @@ npm run preview
 - Playlists locales con descripción, portada optimizada con recorte central y vista previa, múltiples asignaciones durante la importación, duplicación, edición, borrado y orden manual con arrastrar/soltar o botones accesibles. Orden por título, artista, duración y fecha.
 - Reproductor completo y mini reproductor sincronizados: play, pausa, detener, seek, anterior/siguiente, shuffle, repeat off/all/one, volumen, mute, velocidad, cola, reproducir después, reordenación y temporizador.
 - Ecualizador de cinco bandas y presets Flat, Bass Boost, Pop, Rock, Classical y Vocal. Un único grafo y margen de ganancia para evitar saturación por los presets.
-- Media Session con metadatos y controles multimedia cuando el navegador los admite. Restauración de pista, cola y posición sin autoplay.
+- Media Session con metadatos y controles de pantalla bloqueada y audífonos cuando el navegador los admite. La siguiente pista se prepara durante la reproducción para iniciar el cambio sin esperar a IndexedDB. Restauración de pista, cola y posición sin autoplay.
 - Favoritos, búsqueda sin acentos, álbumes, artistas, recientes, más escuchadas e historial real por perfil. Listas paginadas a 75 pistas para limitar el DOM.
 - Borrado independiente del archivo offline o de la canción completa. Al importar de nuevo el mismo audio, se recupera el archivo conservando metadatos, favoritos y relaciones.
 - Duplicados detectados mediante SHA-256 por perfil; una canción en varias playlists no duplica el audio.
 - Respaldo ZIP portable con audio, metadatos, imágenes, playlists, favoritos, historial y preferencias. Cifrado AES-GCM opcional con contraseña y PBKDF2. Verificación SHA-256 antes de una restauración transaccional que combina datos y evita duplicar audio.
-- PWA con caché del shell, recursos locales, manifest, iconos y aviso de actualización manual. No se cachean respuestas de servicios privados ni audio remoto indiscriminadamente.
+- PWA con caché del shell, recursos locales, manifest, iconos y búsqueda periódica de actualizaciones. Se aplican automáticamente con la app visible y la reproducción pausada, fuera de formularios y diálogos; también existe el botón Actualizar. No se cachean respuestas de servicios privados ni audio remoto indiscriminadamente.
 - Almacenamiento estimado, solicitud de persistencia, estados de error y cuotas. Navegación mediante hash compatible con subdirectorios.
 
 Las categorías son personales: **Recién añadidas** significa últimos siete días; **En rotación** y **Más escuchadas** utilizan reproducciones de tu colección, sin afirmar tendencias globales. **Descargadas** contiene solo archivos disponibles en el dispositivo. Una escucha se registra tras 30 segundos reales o la mitad de la pista, lo que ocurra primero; hacer seek no suma tiempo escuchado.
@@ -86,7 +88,7 @@ El servicio opcional no se ejecuta en GitHub Pages. Debe alojarse aparte mediant
 
 En Chrome/Edge, utiliza **Instalar Devnify** o la opción del navegador. En Safari de iPhone/iPad, **Compartir → Añadir a pantalla de inicio**. La app muestra instrucciones si no recibe `beforeinstallprompt`; no informa de instalación completada sin intervención del navegador.
 
-Espera a que aparezca el aviso de preparación offline antes de desconectarte. Los audios se sirven desde IndexedDB, no desde la caché del SW. Una actualización muestra un botón para aplicarla; se pausa la reproducción antes de recargar. Las imágenes internas y los módulos de lectura de audio se incluyen en el precaché.
+Espera a que aparezca el aviso de preparación offline antes de desconectarte. Los audios se sirven desde IndexedDB, no desde la caché del SW. Tras publicar una nueva compilación en la misma URL, la app comprueba actualizaciones al abrirse, recuperar el foco, volver a primer plano o recuperar conexión, y cada minuto mientras está visible. Las actualizaciones se aplican cuando la música está pausada y no hay formularios ni diálogos abiertos. Mientras escuchas, aparece **Actualizar** para aplicarlas manualmente pausando primero. Se guardan cola y posición antes de recargar y se conservan perfiles, canciones y playlists, sin reinstalar. Las imágenes internas y los módulos de lectura de audio se incluyen en el precaché.
 
 ## Respaldo y recuperación
 

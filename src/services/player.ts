@@ -16,11 +16,18 @@ interface State {
   sleepUntil: number;
   eq: number[];
 }
+interface PreparedTrack {
+  song: Song;
+  url: string;
+}
 class Player {
   audio = new Audio();
   ownerId = '';
   private objectUrl = '';
   private token = 0;
+  private preparation = 0;
+  private nextId?: string;
+  private prepared?: PreparedTrack;
   private recorded = false;
   private listening = 0;
   private lastWall = 0;
@@ -51,6 +58,14 @@ class Player {
     this.audio.setAttribute('playsinline', '');
     this.audio.setAttribute('aria-hidden', 'true');
     document.body.append(this.audio);
+    // Safari can use this hint to retain a music playback session while locked.
+    const audioSession = (navigator as Navigator & { audioSession?: { type: string } })
+      .audioSession;
+    try {
+      if (audioSession) audioSession.type = 'playback';
+    } catch {
+      /* Optional API; native HTML audio remains the fallback. */
+    }
     document.addEventListener('visibilitychange', () => {
       // Keep the native media element playing when the PWA leaves the foreground.
       this.syncMediaSession();
@@ -64,11 +79,15 @@ class Player {
       this.patch({ playing: true });
     });
     this.audio.addEventListener('pause', () => {
+      // An ended element can emit pause before ended. Keep the system session
+      // alive until the next track starts or the queue actually finishes.
+      if (this.audio.ended) return;
       this.lastWall = 0;
       this.patch({ playing: false });
       void this.persist();
     });
     this.audio.addEventListener('timeupdate', () => {
+      if (this.checkSleep()) return;
       const now = performance.now();
       if (!this.audio.paused && this.lastWall)
         this.listening += Math.min((now - this.lastWall) / 1000, 2);
@@ -95,6 +114,7 @@ class Player {
       this.patch({ duration: this.audio.duration || 0 }),
     );
     this.audio.addEventListener('ended', () => {
+      if (this.checkSleep()) return;
       if (this.state.repeat === 'one') {
         this.seek(0);
         void this.resume();
@@ -140,6 +160,7 @@ class Player {
     this.state = { ...this.state, ...p };
     for (const fn of this.listeners) fn();
     this.syncMediaSession();
+    if ('ids' in p || 'shuffle' in p || 'repeat' in p) this.prepareNext();
   }
   private syncMediaSession() {
     if (!('mediaSession' in navigator)) return;
@@ -200,28 +221,41 @@ class Player {
   async load(id: string, autoplay = true) {
     const token = ++this.token;
     const owner = this.ownerId;
-    const song = await ownedSong(owner, id);
-    const record = await db.audioBlobs.get(id);
-    if (token !== this.token || owner !== this.ownerId) return;
-    if (!record || record.ownerId !== owner)
-      throw new Error('No se encuentra el archivo de esta canción.');
-    this.pause();
-    this.audio.removeAttribute('src');
+    let track: PreparedTrack;
+    if (this.prepared?.song.id === id && this.prepared.song.ownerId === owner) {
+      track = this.prepared;
+      this.prepared = undefined;
+    } else {
+      const [song, record] = await Promise.all([ownedSong(owner, id), db.audioBlobs.get(id)]);
+      if (token !== this.token || owner !== this.ownerId) return;
+      if (!record || record.ownerId !== owner)
+        throw new Error('No se encuentra el archivo de esta canción.');
+      track = { song, url: URL.createObjectURL(record.blob) };
+    }
+    this.clearPrepared();
+    if (this.recorded) void db.history.update(this.historyId, { seconds: this.listening });
     if (this.objectUrl) URL.revokeObjectURL(this.objectUrl);
-    this.objectUrl = URL.createObjectURL(record.blob);
+    this.objectUrl = track.url;
     this.recorded = false;
     this.listening = 0;
     this.historyId = uid();
     this.audio.src = this.objectUrl;
+    // Browsers may reset the rate when replacing the media resource.
+    this.audio.playbackRate = this.state.speed;
+    const { song } = track;
     this.patch({ song, time: 0, duration: song.duration, error: '' });
-    if ('mediaSession' in navigator)
+    if ('mediaSession' in navigator && typeof MediaMetadata !== 'undefined')
       navigator.mediaSession.metadata = new MediaMetadata({
         title: song.title,
         artist: song.artist,
         album: song.album,
         artwork: song.artwork ? [{ src: song.artwork }] : [],
       });
-    if (autoplay) await this.resume();
+    // With a prepared track play() is called inside ended/nexttrack, before
+    // awaiting IndexedDB or another task that may be suspended in background.
+    const playback = autoplay ? this.resume() : undefined;
+    this.prepareNext();
+    await playback;
     await this.persist();
   }
   async play(song: Song, ids?: string[]) {
@@ -239,18 +273,24 @@ class Player {
     if (!this.state.song) return;
     const token = this.token;
     try {
-      if (this.state.eq.some((x) => x !== 0) && !this.context) await this.enableEqualizer();
-      if (this.context?.state === 'suspended') await this.context.resume();
-      await this.audio.play();
+      const equalizer =
+        this.state.eq.some((x) => x !== 0) && !this.context
+          ? this.enableEqualizer()
+          : this.context?.state === 'suspended'
+            ? this.context.resume()
+            : undefined;
+      await Promise.all([this.audio.play(), equalizer]);
     } catch (e) {
       if (token !== this.token || (e instanceof Error && e.name === 'AbortError')) return;
       this.patch({
+        playing: false,
         error: e instanceof Error ? e.message : 'Pulsa reproducir para continuar.',
       });
     }
   }
   pause() {
     this.audio.pause();
+    this.patch({ playing: false });
     if (this.recorded) void db.history.update(this.historyId, { seconds: this.listening });
   }
   toggle() {
@@ -259,6 +299,7 @@ class Player {
   }
   stop() {
     ++this.token;
+    this.clearPrepared();
     this.pause();
     this.audio.removeAttribute('src');
     this.audio.load();
@@ -275,26 +316,57 @@ class Player {
     void this.persist();
   }
   async next(ended = false) {
-    let ids = this.state.ids;
-    if (!ids.length) return;
-    let index = ids.indexOf(this.state.song?.id || '');
-    if (this.state.shuffle && ids.length > 1) {
-      const candidates = ids.filter((id) => id !== this.state.song?.id);
-      ids = [...ids];
-      index = ids.indexOf(candidates[Math.floor(Math.random() * candidates.length)]) - 1;
-    }
-    if (index + 1 >= ids.length) {
-      if (this.state.repeat === 'all') index = -1;
-      else {
-        if (ended) this.pause();
-        return;
-      }
+    if (this.checkSleep()) return;
+    const id = this.nextId ?? this.chooseNext();
+    if (!id) {
+      if (ended) this.pause();
+      return;
     }
     try {
-      await this.load(ids[index + 1]);
+      await this.load(id);
     } catch (e) {
-      this.patch({ error: String(e) });
+      this.patch({ error: String(e), playing: !this.audio.paused });
     }
+  }
+  private chooseNext() {
+    const { ids, song, shuffle, repeat } = this.state;
+    if (!ids.length) return;
+    if (shuffle && ids.length > 1) {
+      const candidates = ids.filter((id) => id !== song?.id);
+      return candidates[Math.floor(Math.random() * candidates.length)];
+    }
+    const index = ids.indexOf(song?.id || '') + 1;
+    return ids[index] ?? (repeat === 'all' ? ids[0] : undefined);
+  }
+  private clearPrepared() {
+    ++this.preparation;
+    if (this.prepared) URL.revokeObjectURL(this.prepared.url);
+    this.prepared = undefined;
+    this.nextId = undefined;
+  }
+  private prepareNext() {
+    this.clearPrepared();
+    if (!this.state.song || !this.ownerId) return;
+    const id = this.chooseNext();
+    this.nextId = id;
+    if (!id) return;
+    const preparation = this.preparation;
+    const owner = this.ownerId;
+    void Promise.all([ownedSong(owner, id), db.audioBlobs.get(id)])
+      .then(([song, record]) => {
+        if (preparation !== this.preparation || owner !== this.ownerId) return;
+        if (record?.ownerId === owner)
+          this.prepared = { song, url: URL.createObjectURL(record.blob) };
+      })
+      .catch(() => {
+        // Report unavailable audio only when playback is requested.
+      });
+  }
+  private checkSleep() {
+    if (!this.state.sleepUntil || Date.now() < this.state.sleepUntil) return false;
+    this.pause();
+    this.patch({ sleepUntil: 0 });
+    return true;
   }
   async previous() {
     if (this.audio.currentTime > 3) {
