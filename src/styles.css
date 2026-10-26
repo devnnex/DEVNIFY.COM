@@ -3825,6 +3825,28 @@ progress::-webkit-progress-value {
     padding: 15px;
   }
 }
+/* Keep form text large enough to avoid focus zoom on mobile, including landscape touchscreens. */
+@media (max-width: 900px), (any-pointer: coarse) {
+  :root
+    :is(
+      input:not(
+        [type='checkbox'],
+        [type='radio'],
+        [type='range'],
+        [type='file'],
+        [type='hidden'],
+        [type='color'],
+        [type='button'],
+        [type='submit'],
+        [type='reset'],
+        [type='image']
+      ),
+      textarea,
+      select
+    ) {
+    font-size: 16px;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   *,
   *:before,

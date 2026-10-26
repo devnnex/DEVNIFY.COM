@@ -37,6 +37,7 @@ npm run preview
 ## Funciones
 
 - Cuentas locales múltiples, selector de perfiles, avatar, sesiones recordadas opcionales, cambio de contraseña y eliminación confirmada por perfil.
+- Recuperación desde una sesión abierta: **Ajustes → Olvidé mi contraseña** permite confirmar el usuario y establecer una nueva clave sin recordar la anterior. Conserva el mismo perfil y toda su biblioteca. La sesión abierta autoriza este restablecimiento; no es una verificación de identidad por correo ni una recuperación desde la pantalla de acceso.
 - Verificadores PBKDF2-SHA256 con salt aleatorio y 600 000 iteraciones. No se guardan contraseñas en texto plano. Las cuentas separan los datos en la aplicación; no cifran la base completa ni sustituyen al acceso físico seguro al dispositivo.
 - Importación múltiple de archivos y arrastrar/soltar. Lectura de metadatos, duración, portada, álbum, género, año y bitrate mediante `music-metadata`. Los Blobs se guardan en IndexedDB.
 - Conversión local de vídeo/audio a MP3: **Añadir música → Vídeo a MP3**, seleccionar Favoritos/playlists y elegir archivo. El decodificador del navegador extrae el audio y LAME lo codifica en un Web Worker; no sube el vídeo ni necesita servidor, Internet o CMD. Admite archivos compatibles con el navegador de hasta 100 MB y 20 minutos, mono/estéreo; probado con MP4 H.264/AAC. Bitrates de 128/192/256/320 kbps. No obtiene el vídeo desde un enlace de YouTube.

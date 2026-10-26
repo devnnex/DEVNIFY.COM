@@ -81,6 +81,38 @@ export async function changePassword(
     iterations,
   });
 }
+
+function activeSessionId() {
+  return sessionStorage.getItem('aura.session') || localStorage.getItem('aura.session');
+}
+
+export async function resetPasswordFromSession(
+  userId: string,
+  username: string,
+  password: string,
+  confirmation: string,
+) {
+  const user = await restoreSession();
+  if (!user || user.id !== userId)
+    throw new Error('Necesitas una sesión abierta de este perfil para restablecer su contraseña.');
+  if (username.trim().toLowerCase() !== user.username)
+    throw new Error('El usuario no coincide con el perfil de esta sesión.');
+  if (password.length < 10) throw new Error('Usa al menos 10 caracteres en la nueva contraseña.');
+  if (password !== confirmation) throw new Error('Las contraseñas no coinciden.');
+
+  const salt = bytesToHex(crypto.getRandomValues(new Uint8Array(24)).buffer);
+  const verifier = await derive(password, salt);
+  return db.transaction('rw', db.users, async () => {
+    const current = await db.users.get(userId);
+    if (activeSessionId() !== userId || !current)
+      throw new Error('La sesión ha cambiado. Vuelve a abrir la recuperación desde tu perfil.');
+    if (current.salt !== user.salt || current.verifier !== user.verifier)
+      throw new Error('La contraseña cambió mientras se procesaba. Vuelve a intentarlo.');
+    await db.users.update(userId, { salt, verifier, iterations });
+    return { ...current, salt, verifier, iterations };
+  });
+}
+
 export function saveSession(user: User, remember: boolean) {
   sessionStorage.setItem('aura.session', user.id);
   if (remember) localStorage.setItem('aura.session', user.id);
@@ -91,6 +123,6 @@ export function clearSession() {
   localStorage.removeItem('aura.session');
 }
 export async function restoreSession() {
-  const id = sessionStorage.getItem('aura.session') || localStorage.getItem('aura.session');
+  const id = activeSessionId();
   return id ? db.users.get(id) : undefined;
 }

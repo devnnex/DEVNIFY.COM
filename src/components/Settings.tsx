@@ -11,7 +11,7 @@ import {
   LockKeyhole,
 } from 'lucide-react';
 import { db, deleteUser } from '../services/db';
-import { changePassword, saveSession } from '../services/auth';
+import { changePassword, resetPasswordFromSession, saveSession } from '../services/auth';
 import { optimizeImage, downloadFile } from '../services/imports';
 import { exportLibrary, inspectBackup, restoreLibrary } from '../services/backups';
 import { Field, Modal } from './common';
@@ -41,7 +41,8 @@ export function Settings({
   install: () => void;
 }) {
   const [storage, setStorage] = useState<StorageEstimate>();
-  const [password, setPassword] = useState(false);
+  const [password, setPassword] = useState<'change' | 'recover'>();
+  const [passwordBusy, setPasswordBusy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [backupPassword, setBackupPassword] = useState('');
   const [preview, setPreview] = useState<Awaited<ReturnType<typeof inspectBackup>>>();
@@ -133,8 +134,23 @@ export function Settings({
             />{' '}
             Mantener sesión al cerrar
           </label>
-          <button className="text-button" onClick={() => setPassword(true)}>
+          <button
+            className="text-button"
+            onClick={() => {
+              setError('');
+              setPassword('change');
+            }}
+          >
             <LockKeyhole size={16} /> Cambiar contraseña
+          </button>
+          <button
+            className="text-button"
+            onClick={() => {
+              setError('');
+              setPassword('recover');
+            }}
+          >
+            Olvidé mi contraseña
           </button>
           <div className="divider" />
           <button className="secondary full" onClick={onLogout}>
@@ -288,31 +304,65 @@ export function Settings({
         </button>
       </section>
       {password && (
-        <Modal title="Cambiar contraseña" onClose={() => setPassword(false)}>
+        <Modal
+          title={password === 'recover' ? 'Restablecer contraseña' : 'Cambiar contraseña'}
+          onClose={() => setPassword(undefined)}
+        >
+          {password === 'recover' && (
+            <p className="muted">
+              Tienes una sesión abierta de <strong>@{user.username}</strong> en este navegador.
+              Puedes elegir una nueva contraseña para este perfil. Tu música, favoritos y playlists
+              se conservan.
+            </p>
+          )}
           <form
             onSubmit={async (e) => {
               e.preventDefault();
+              if (passwordBusy) return;
               setError('');
+              setPasswordBusy(true);
               const f = new FormData(e.currentTarget);
               try {
                 const fresh = await db.users.get(user.id);
                 if (!fresh) throw new Error('Perfil no disponible');
-                await changePassword(
-                  fresh,
-                  String(f.get('current')),
-                  String(f.get('new')),
-                  String(f.get('confirmation')),
-                );
+                if (password === 'recover') {
+                  await resetPasswordFromSession(
+                    user.id,
+                    String(f.get('username')),
+                    String(f.get('new')),
+                    String(f.get('confirmation')),
+                  );
+                } else {
+                  await changePassword(
+                    fresh,
+                    String(f.get('current')),
+                    String(f.get('new')),
+                    String(f.get('confirmation')),
+                  );
+                }
                 onUser((await db.users.get(user.id))!);
                 notify('Contraseña actualizada.');
-                setPassword(false);
+                setPassword(undefined);
               } catch (err) {
                 setError(err instanceof Error ? err.message : String(err));
+              } finally {
+                setPasswordBusy(false);
               }
             }}
           >
+            {password === 'recover' && (
+              <Field label="Confirma tu usuario">
+                <input
+                  name="username"
+                  autoComplete="username"
+                  placeholder={user.username}
+                  required
+                  disabled={passwordBusy}
+                />
+              </Field>
+            )}
             {[
-              ['current', 'Contraseña actual'],
+              ...(password === 'change' ? [['current', 'Contraseña actual']] : []),
               ['new', 'Nueva contraseña'],
               ['confirmation', 'Confirmación'],
             ].map(([name, label]) => (
@@ -322,6 +372,7 @@ export function Settings({
                   name={name}
                   autoComplete={name === 'current' ? 'current-password' : 'new-password'}
                   required
+                  disabled={passwordBusy}
                   minLength={name === 'current' ? 1 : 10}
                 />
               </Field>
@@ -331,7 +382,13 @@ export function Settings({
                 {error}
               </p>
             )}
-            <button className="primary full">Actualizar contraseña</button>
+            <button className="primary full" disabled={passwordBusy}>
+              {passwordBusy
+                ? 'Guardando…'
+                : password === 'recover'
+                  ? 'Guardar nueva contraseña'
+                  : 'Actualizar contraseña'}
+            </button>
           </form>
         </Modal>
       )}

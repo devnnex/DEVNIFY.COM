@@ -1,17 +1,33 @@
 ﻿# Verificación ejecutada
 
-Entrega local del 25 de octubre de 2026. No hay despliegue público ni servidor de descarga activo.
+Validaciones locales del 25 y 26 de octubre de 2026. La actualización del día 26 incluye recuperación de contraseña desde una sesión abierta y corrección de los campos que provocaban zoom al enfocarlos en móviles. El repositorio es `devnnex/DEVNIFY.COM`, rama `main`. No se acredita un servidor de descarga de producción.
 
 | Comprobación | Resultado |
 | --- | --- |
 | TypeScript y ESLint | Correctos |
-| Pruebas de dominio | 16 aprobadas: perfiles, biblioteca, respaldos y estrategia de importación |
+| Pruebas de dominio | 20 aprobadas el día 26: perfiles, recuperación desde sesión, biblioteca, respaldos e importación |
 | Build | Correcto: HTML autocontenido de aproximadamente 1,89 MB en raíz y dist; manifiestos y service workers generados |
-| Playwright Chromium | 17 pruebas aprobadas |
+| Playwright Chromium | Suite completa: 18 aprobadas el día 26 sobre el nuevo build |
 | Build del servicio opcional | Correcto |
 | Pruebas del servicio con FFmpeg, yt-dlp y red habilitados | 11 aprobadas, ninguna omitida |
 | Conversión local sin red | MP4 H.264/AAC físico → MP3 real → IndexedDB → recarga → reproducción |
 | Integración con servicio real temporal | HTML local → API autenticada → fuente HTTPS CC0 → FFmpeg → guardado → reproducción offline |
+
+## Campos móviles y zoom al enfocar
+
+Los campos de texto, contraseñas, búsqueda, URLs, números, áreas de texto y selectores se muestran a 16 px cuando el viewport mide hasta 900 px o existe un puntero táctil (`any-pointer: coarse`). Esta segunda condición cubre pantallas táctiles en horizontal o de mayor tamaño. La regla se aplica después de los estilos específicos de cada formulario. No se cambia el tamaño de checkboxes, sliders ni selectores de archivos, y se conserva la posibilidad de ampliar manualmente la página.
+
+Se inspeccionó el HTML compilado en Chromium con emulación táctil: acceso a 320, 390, 844, 1024 y 1366 px; registro, editor de playlist con textarea, importación por URL con opciones y servicio, ajustes, recuperación y búsqueda. Las fuentes computadas fueron de 16 px, sin desbordamiento horizontal y con escala de viewport 1 al enfocar los campos revisados. En escritorio de 1440 px sin pantalla táctil se conserva el tamaño anterior. Evidencia temporal: `test-results/input-focus-qa.json` y capturas de navegador.
+
+El cambio responde al cálculo de zoom de [WebKit para iOS](https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/API/ios/WKWebViewIOS.mm), que utiliza un tamaño estándar de 16 para el texto del campo enfocado. La emulación de Chromium no acredita el comportamiento del teclado nativo de un iPhone físico; ese límite se mantiene.
+
+## Recuperación desde una sesión abierta
+
+Se añadieron cuatro pruebas de dominio: restablecimiento desde una sesión temporal con conservación de datos, rechazo sin sesión o para otro perfil, validación del usuario y de la nueva contraseña, y cancelación del cambio si se cierra la sesión mientras se calcula el verificador. Se comprueba que se renuevan salt/verificador, que la contraseña anterior deja de funcionar y que no cambian las canciones, bytes de audio, playlists, favoritos, historial, preferencias, cola ni el otro perfil.
+
+`e2e/password-recovery.spec.ts` abre el HTML por `file://`, sin red, en un viewport móvil. Registra un perfil sin sesión permanente, recarga la misma pestaña, importa un MP3 real a Favoritos y una playlist y abre **Ajustes → Olvidé mi contraseña**. Comprueba el rechazo de un usuario incorrecto y establece una nueva contraseña sin pedir la anterior. Recarga, cierra sesión, verifica que la clave anterior falla y entra con la nueva. La playlist y Favoritos conservan la canción y el audio se reproduce. Sin solicitudes HTTP ni errores JavaScript. La prueba de cambio normal de contraseña con clave anterior también pasó sobre el mismo build.
+
+El restablecimiento confía en la sesión local que ya está abierta; no es una verificación de identidad por correo. Solo modifica las credenciales del perfil de esa sesión. Las pruebas usan almacenamiento aislado y no cambian el perfil real del usuario.
 
 ## Conversión sin servidor
 
